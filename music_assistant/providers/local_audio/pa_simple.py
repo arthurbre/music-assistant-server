@@ -5,22 +5,23 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from typing import Any, ClassVar, Final, Self
+from typing import Any, Self
 
 from music_assistant.helpers.pulse_capture import get_default_pulse_server
-
-PA_STREAM_PLAYBACK: Final = 1
-
-PA_SAMPLE_S16LE: Final = 3
-PA_SAMPLE_S32LE: Final = 7  # verified via pa_sample_format_to_string
-PA_SAMPLE_S24LE: Final = 9  # packed 3-byte LE — native format of s24le PA sinks
-
-# Map PA sample format constant -> bit depth
-_PA_FORMAT_TO_BIT_DEPTH: Final[dict[int, int]] = {
-    PA_SAMPLE_S16LE: 16,
-    PA_SAMPLE_S24LE: 24,
-    PA_SAMPLE_S32LE: 32,
-}
+from music_assistant.helpers.pulseaudio import (
+    PA_SAMPLE_S16LE,
+    PA_SAMPLE_S24LE,
+    PA_SAMPLE_S32LE,
+    PA_STREAM_PLAYBACK,
+    PCM_FORMAT_TO_BIT_DEPTH,
+    run_pactl_json,
+)
+from music_assistant.helpers.pulseaudio import (
+    PASampleSpec as _PASampleSpec,
+)
+from music_assistant.helpers.pulseaudio import (
+    get_simple_lib as _get_lib,
+)
 
 
 def _pa_sample_format(bit_depth: int) -> int:
@@ -32,52 +33,6 @@ def _pa_sample_format(bit_depth: int) -> int:
         # packed 3-byte before writing, so PA sees s24le here.
         return PA_SAMPLE_S24LE
     return PA_SAMPLE_S16LE
-
-
-class _PASampleSpec(ctypes.Structure):
-    _fields_: ClassVar = [
-        ("format", ctypes.c_int),
-        ("rate", ctypes.c_uint32),
-        ("channels", ctypes.c_uint8),
-    ]
-
-
-def _load_lib() -> ctypes.CDLL:
-    lib = ctypes.CDLL("libpulse-simple.so.0")
-    lib.pa_simple_new.restype = ctypes.c_void_p
-    lib.pa_simple_new.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    lib.pa_simple_write.restype = ctypes.c_int
-    lib.pa_simple_write.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_void_p,
-    ]
-    lib.pa_simple_drain.restype = ctypes.c_int
-    lib.pa_simple_drain.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    lib.pa_simple_free.restype = None
-    lib.pa_simple_free.argtypes = [ctypes.c_void_p]
-    return lib
-
-
-_lib: ctypes.CDLL | None = None
-
-
-def _get_lib() -> ctypes.CDLL:
-    global _lib  # noqa: PLW0603
-    if _lib is None:
-        _lib = _load_lib()
-    return _lib
 
 
 class PASimpleStream:
@@ -241,33 +196,8 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
     :returns: List of sink dicts, one per sink, containing name, description,
         sample rate, bit depth, channel map, and remap-sink metadata.
     """
-    import json  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-
-    # Locate pactl — requires pulseaudio-utils to be installed
-    if not (path := shutil.which("pactl")):
-        raise FileNotFoundError("pactl not found — please install pulseaudio-utils")
-    pactl_bin = path
-
-    env = {**os.environ}
-    pulse_server = get_default_pulse_server()
-    if pulse_server:
-        env["PULSE_SERVER"] = pulse_server
-
-    result = subprocess.run(  # noqa: S603
-        [pactl_bin, "--format=json", "list", "sinks"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        env=env,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"pactl exited {result.returncode}: {result.stderr.strip()}")
-
     sinks = []
-    for sink in json.loads(result.stdout):
+    for sink in run_pactl_json("sinks"):
         name: str = sink.get("name", "")
         desc: str = sink.get("description", name)
         spec_str: str = sink.get("sample_specification", "")
@@ -295,22 +225,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             fmt = parts[0]  # e.g. 's32le'
             channels = int(parts[1].replace("ch", ""))
             sample_rate = int(parts[2].replace("Hz", ""))
-            # Parse bit depth from PA format string using explicit lookup.
-            # Avoids s24-32le parsing as 2432 with the digit-filter approach.
-            _fmt_to_depth = {
-                "u8": 8,
-                "s16le": 16,
-                "s16be": 16,
-                "s24le": 24,
-                "s24be": 24,
-                "s24-32le": 32,
-                "s24-32be": 32,
-                "s32le": 32,
-                "s32be": 32,
-                "float32le": 32,
-                "float32be": 32,
-            }
-            bit_depth = _fmt_to_depth.get(fmt.lower(), 16)
+            bit_depth = PCM_FORMAT_TO_BIT_DEPTH.get(fmt.lower(), 16)
         except (IndexError, ValueError):  # fmt: skip
             continue
         if channels < 2:
