@@ -219,8 +219,9 @@ class LocalAudioSourceProvider(PluginProvider):
         """Return the single AudioSource this plugin exposes."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return StreamDetails for streaming the captured PCM audio to a queue."""
+        source_id = item_id
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
         return StreamDetails(
