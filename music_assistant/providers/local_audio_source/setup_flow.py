@@ -53,6 +53,12 @@ async def run_setup(session: SetupSession) -> None:
 
     while True:
         device_options = await get_available_input_devices(include_monitors=include_monitors)
+        # Devices are only offered as a picker when at least one is actually detected live.
+        # The frontend renders a STRING entry with a non-empty `options` list as a strict
+        # dropdown with no way to type a custom value, so a source that isn't live right now
+        # (e.g. a Bluetooth capture that only exists while something is reading it) must fall
+        # back to a plain free-text field instead of a blank "manual entry" placeholder option.
+        real_devices = [opt for opt in device_options if opt.value]
         values = await session.form(
             [
                 ConfigEntry(
@@ -65,8 +71,8 @@ async def run_setup(session: SetupSession) -> None:
                 ConfigEntry(
                     key=CONF_INPUT_DEVICE,
                     type=ConfigEntryType.STRING,
-                    options=device_options,
-                    default_value=device_options[0].value if device_options else None,
+                    options=real_devices,
+                    default_value=real_devices[0].value if real_devices else None,
                     value=prefill.get(CONF_INPUT_DEVICE),
                     required=True,
                 ),
