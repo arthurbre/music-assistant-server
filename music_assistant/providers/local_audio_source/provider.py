@@ -34,7 +34,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.pulseaudio import PA_SAMPLE_S16LE, PA_SAMPLE_S32LE
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .constants import (
     AUDIO_SOURCE_ID,
@@ -120,7 +120,7 @@ class LocalAudioSourceProvider(PluginProvider):
         self._capture_lock = asyncio.Lock()
         self._paused = False
         self._active_stream_id: str = ""
-        self._in_use_by_queue: str | None = None
+        self._in_use_by_player: str | None = None
         self._active_session_id: str | None = None
         self._auto_triggered_queue: str | None = None
         self._auto_trigger_pending_since: float = 0.0
@@ -243,7 +243,7 @@ class LocalAudioSourceProvider(PluginProvider):
         _stream_id = str(uuid4())
         self._active_stream_id = _stream_id
         self._paused = False
-        consumer_queue = self._in_use_by_queue
+        consumer_queue = self._in_use_by_player
         captured_session_id = self._active_session_id
 
         fmt = streamdetails.audio_format
@@ -290,10 +290,10 @@ class LocalAudioSourceProvider(PluginProvider):
                 yield chunk
         finally:
             if (
-                self._in_use_by_queue == consumer_queue
+                self._in_use_by_player == consumer_queue
                 and self._active_session_id == captured_session_id
             ):
-                self._in_use_by_queue = None
+                self._in_use_by_player = None
             async with self._capture_lock:
                 await self._stop_capture_stream()
             self.logger.debug("Stopped local audio capture: %s", _stream_details)
@@ -302,7 +302,7 @@ class LocalAudioSourceProvider(PluginProvider):
         self,
         source_id: str,
         action: SourceControl,
-        value: int | None = None,
+        value: SourceControlValue = None,
     ) -> None:
         """Handle a playback control command for the active AudioSource."""
         if source_id != AUDIO_SOURCE_ID:
@@ -313,18 +313,18 @@ class LocalAudioSourceProvider(PluginProvider):
             self._paused = True
 
     async def on_source_selected(
-        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Claim the source for this queue and let any prior stream wind down."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        self._in_use_by_queue = queue_id
-        if self._auto_triggered_queue and self._auto_triggered_queue != queue_id:
+        self._in_use_by_player = owner_player_id
+        if self._auto_triggered_queue and self._auto_triggered_queue != owner_player_id:
             self._auto_triggered_queue = None
         self._active_session_id = stream_session_id
 
     async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
+        self, source_id: str, owner_player_id: str, stream_session_id: str
     ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
@@ -332,9 +332,9 @@ class LocalAudioSourceProvider(PluginProvider):
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
-        if self._auto_triggered_queue == queue_id:
+        if self._in_use_by_player == owner_player_id:
+            self._in_use_by_player = None
+        if self._auto_triggered_queue == owner_player_id:
             self._auto_triggered_queue = None
 
     def _build_image(self) -> MediaItemImage | None:
@@ -409,7 +409,7 @@ class LocalAudioSourceProvider(PluginProvider):
         stream_details: str,
     ) -> bool:
         """Check whether the current get_audio_stream loop should stop and log why."""
-        if self._in_use_by_queue != consumer_queue:
+        if self._in_use_by_player != consumer_queue:
             self.logger.debug(
                 "Stopping local audio capture: %s - Reason: plugin is no longer in use by queue %s",
                 stream_details,
@@ -477,7 +477,7 @@ class LocalAudioSourceProvider(PluginProvider):
                 now = loop.time()
                 if (
                     self._auto_triggered_queue
-                    and not self._in_use_by_queue
+                    and not self._in_use_by_player
                     and now - self._auto_trigger_pending_since > TRIGGER_PENDING_TIMEOUT_S
                 ):
                     self.logger.warning(
@@ -492,7 +492,7 @@ class LocalAudioSourceProvider(PluginProvider):
                     quiet_since = None
                     loud_since = loud_since or now
                     if (
-                        not self._in_use_by_queue
+                        not self._in_use_by_player
                         and not self._auto_triggered_queue
                         and now - loud_since >= TRIGGER_ATTACK_S
                     ):
