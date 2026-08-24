@@ -61,6 +61,7 @@ from .constants import (
     TRIGGER_PENDING_TIMEOUT_S,
     TRIGGER_RELEASE_S,
 )
+from .helpers import resolve_input_device
 from .pa_simple import PASimpleRecordStream, enumerate_pa_sources
 
 if TYPE_CHECKING:
@@ -444,20 +445,22 @@ class LocalAudioSourceProvider(PluginProvider):
         try:
             while True:
                 if not stream:
-                    try:
-                        stream = await loop.run_in_executor(
-                            self._pa_executor,
-                            lambda: PASimpleRecordStream(
-                                source_name=self._pa_source,
-                                app_name=f"music-assistant-{self.instance_id}-sensor",
-                                rate=self._sample_rate,
-                                channels=self._channels,
-                            ),
+                    pa_source = await self._resolve_pa_source()
+
+                    def _open_stream(pa_source: str = pa_source) -> PASimpleRecordStream:
+                        return PASimpleRecordStream(
+                            source_name=pa_source,
+                            app_name=f"music-assistant-{self.instance_id}-sensor",
+                            rate=self._sample_rate,
+                            channels=self._channels,
                         )
+
+                    try:
+                        stream = await loop.run_in_executor(self._pa_executor, _open_stream)
                     except OSError as err:
                         self.logger.warning(
                             "Signal sensor couldn't open %r, retrying in %.0fs: %s",
-                            self._pa_source,
+                            pa_source,
                             SENSOR_RETRY_S,
                             err,
                         )
@@ -604,17 +607,33 @@ class LocalAudioSourceProvider(PluginProvider):
 
         task.add_done_callback(_on_stop_done)
 
+    async def _resolve_pa_source(self) -> str:
+        """Resolve the configured source against currently live sources, with fallback."""
+        loop = asyncio.get_running_loop()
+        try:
+            sources = await loop.run_in_executor(None, enumerate_pa_sources)
+        except FileNotFoundError, RuntimeError:
+            return self._pa_source
+        resolved = resolve_input_device(self._pa_source, sources)
+        if resolved != self._pa_source:
+            self.logger.info(
+                "Configured source %r not live, falling back to %r",
+                self._pa_source,
+                resolved,
+            )
+        return resolved
+
     async def _start_capture_stream(self) -> PASimpleRecordStream | None:
         """Open a new PulseAudio/PipeWire capture stream via libpulse-simple."""
+        pa_source = await self._resolve_pa_source()
         self.logger.debug(
             "Opening capture stream for %s (source=%s %dbit/%dHz/%dch)",
             self._friendly_name,
-            self._pa_source,
+            pa_source,
             self._active_bit_depth,
             self._active_sample_rate,
             self._active_channels,
         )
-        pa_source = self._pa_source
         app_name = f"music-assistant-{self.instance_id}"
         sample_rate = self._active_sample_rate
         channels = self._active_channels
@@ -680,7 +699,8 @@ class LocalAudioSourceProvider(PluginProvider):
             )
             sources = []
 
-        match = next((s for s in sources if s["name"] == self._pa_source), None)
+        resolved = resolve_input_device(self._pa_source, sources)
+        match = next((s for s in sources if s["name"] == resolved), None)
         if match is None:
             return AudioFormat(
                 content_type=ContentType.PCM_S16LE,
