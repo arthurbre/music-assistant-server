@@ -7,7 +7,6 @@ from typing import Any
 
 from music_assistant_models.config_entries import ConfigValueOption
 
-from .constants import DETECTION_POLL_DURATION_S, DETECTION_POLL_INTERVAL_S
 from .pa_simple import enumerate_pa_sources
 
 
@@ -15,24 +14,13 @@ async def get_available_input_devices(include_monitors: bool = False) -> list[Co
     """
     Scan for available PulseAudio/PipeWire capture sources via `pactl`.
 
-    Polls repeatedly for a few seconds and merges what it sees, since a source like a
-    Bluetooth A2DP capture only exists in PipeWire while something is actively reading
-    from it and a single snapshot can easily miss it.
-
     :param include_monitors: also list sink monitor sources. Off by default.
     """
-    seen: dict[str, dict[str, Any]] = {}
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + DETECTION_POLL_DURATION_S
-    while True:
-        for src in await loop.run_in_executor(None, _enumerate_pa_sources_safe):
-            seen.setdefault(src["name"], src)
-        if loop.time() >= deadline:
-            break
-        await asyncio.sleep(DETECTION_POLL_INTERVAL_S)
+    sources = await loop.run_in_executor(None, _enumerate_pa_sources_safe)
 
     options: list[ConfigValueOption] = []
-    for src in seen.values():
+    for src in sources:
         if src["is_monitor"] and not include_monitors:
             continue
         label = (

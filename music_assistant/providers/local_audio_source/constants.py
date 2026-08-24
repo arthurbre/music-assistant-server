@@ -40,11 +40,6 @@ TRIGGER_RELEASE_S = 5.0  # signal must stay below threshold this long before we 
 SENSOR_RETRY_S = 5.0  # backoff when the sensor can't open the configured source
 TRIGGER_PENDING_TIMEOUT_S = 25.0  # drop a stale auto-trigger claim after this long unconfirmed
 
-# a Bluetooth A2DP capture source only exists in PipeWire while something reads from it, so a
-# single snapshot during setup can easily miss it entirely
-DETECTION_POLL_DURATION_S = 2.5
-DETECTION_POLL_INTERVAL_S = 0.5
-
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 AUDIO_SOURCE_ID = "main"
